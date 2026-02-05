@@ -1,0 +1,17 @@
+// 根项目 build.gradle
+plugins {
+    id 'com.android.library' version '8.2.2' apply false
+    id 'com.android.application' version '8.2.2' apply false
+    // 核心修改：Kotlin版本升级为1.9.10（匹配Compose 1.5.3）
+    id 'org.jetbrains.kotlin.android' version '1.9.10' apply false
+    // 核心修改：KSP版本同步升级为1.9.10-1.0.13
+    id 'com.google.devtools.ksp' version '1.9.10-1.0.13' apply false
+}
+
+ext {
+    Version = "1.0.0"
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
