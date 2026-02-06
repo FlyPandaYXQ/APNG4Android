@@ -5,7 +5,7 @@
 * 提供Glide插件，可使用Glide直接加载
 * 支持动画播放过程控制
 * 支持静图展示
-*  基于https://github.com/penfeizhou/APNG4Android 修改 新增setSpeed() 可以调节.webp播放速度 只适用WebPDrawable 新版APIAnimatedWebpView不适用  速度比1：100
+*  基于https://github.com/penfeizhou/APNG4Android 修改 新增setSpeed() 可以调节.webp播放速度 只适用WebPDrawable 新版APIAnimatedWebpView不适用  速度比1：10
 
 ## [版本记录](https://github.com/penfeizhou/APNG4Android/releases)
 

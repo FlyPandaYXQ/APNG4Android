@@ -146,7 +146,7 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
     private static final float MIN_SPEED = 0.1f; // 最小播放速度
     private static final float MAX_SPEED = 10.0f; // 最大播放速度
     private static final String INVALID_SPEED_MSG = "速度系数必须是大于0的有效浮点数（如0.5~10.0）";
-    private static final float SPEED_SCALE_FACTOR = 100.0f; // 速度缩放因子
+    private static final float SPEED_SCALE_FACTOR = 10.0f; // 速度缩放因子
     /**
      * 设置动画播放速度系数
      * @param speed 原始速度系数（范围建议0.5~10.0），会先缩放再限制上下限
