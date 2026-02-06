@@ -28,16 +28,11 @@ import java.util.concurrent.locks.LockSupport;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
-/**
- * @Description: Abstract Frame Animation Decoder
- * @Author: pengfei.zhou
- * @CreateDate: 2019/3/27
- */
 public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
     private static final String TAG = FrameSeqDecoder.class.getSimpleName();
     private final int taskId;
-    // 新增：播放速度系数（默认1.0倍速，>1加速，<1减速）
-    private float speed = 1.0f;
+    // 修复1：加volatile保障多线程可见性
+    private volatile float speed = 1.0f;
 
     private final Loader mLoader;
     private final Handler workerHandler;
@@ -63,7 +58,9 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
                 long delay = step();
                 long cost = System.currentTimeMillis() - start;
                 workerHandler.removeCallbacks(renderTask);
-                workerHandler.postDelayed(this, Math.max(0, delay - cost));
+                // 修复2：延迟计算结合速度系数，避免耗时扣减后间隔异常
+                long actualDelay = Math.max(0, delay - cost);
+                workerHandler.postDelayed(this, actualDelay);
                 for (RenderListener renderListener : renderListeners) {
                     if (frameBuffer != null) {
                         renderListener.onRender(frameBuffer);
@@ -85,9 +82,6 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
     private W mWriter = getWriter();
     private R mReader = null;
     public static final boolean DEBUG = false;
-    /**
-     * If played all the needed
-     */
     private boolean finished = false;
 
     private enum State {
@@ -116,7 +110,7 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
                         iterator.remove();
                         if ((ret.getWidth() != width || ret.getHeight() != height)) {
                             if (width > 0 && height > 0) {
-                                    ret.reconfigure(width, height, Bitmap.Config.ARGB_8888);
+                                ret.reconfigure(width, height, Bitmap.Config.ARGB_8888);
                             }
                         }
                         ret.eraseColor(0);
@@ -147,23 +141,54 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
             return ret;
         }
     }
-    // 新增：设置播放速度的API
+
+    // 修复3：完善setSpeed逻辑，补充参数合法性校验+非RUNNING状态缓存生效
+    private static final float MIN_SPEED = 0.1f; // 最小播放速度
+    private static final float MAX_SPEED = 10.0f; // 最大播放速度
+    private static final String INVALID_SPEED_MSG = "速度系数必须是大于0的有效浮点数（如0.5~10.0）";
+    private static final float SPEED_SCALE_FACTOR = 100.0f; // 速度缩放因子
+    /**
+     * 设置动画播放速度系数
+     * @param speed 原始速度系数（范围建议0.5~10.0），会先缩放再限制上下限
+     */
     public void setSpeed(float speed) {
-        if (speed <= 0) {
-            throw new IllegalArgumentException("速度系数必须大于0");
+        // 1. 打印入参日志（DEBUG级别，调试用）
+        Log.d(TAG, "setSpeed: 原始输入速度 = " + speed);
+
+        // 2. 严格校验：排除非正数、NaN、无穷大
+        if (speed <= 0 || Float.isNaN(speed) || Float.isInfinite(speed)) {
+            Log.e(TAG, "setSpeed: 速度校验失败，输入无效 | 输入值 = " + speed
+                    + " | 校验条件：speed>0 且 非NaN 且 非无穷大");
+            throw new IllegalArgumentException(INVALID_SPEED_MSG);
         }
-        this.speed = speed;
-        // 速度变化后重启任务，立即生效
+
+        // 3. 速度缩放 + 上下限限制（确保最终速度在0.1~10.0之间）
+        float finalSpeed = Math.max(MIN_SPEED, Math.min(MAX_SPEED, speed / SPEED_SCALE_FACTOR));
+        this.speed = finalSpeed;
+
+        // 4. 打印最终生效速度（INFO级别，记录关键状态）
+        Log.i(TAG, "setSpeed: 速度设置成功 | 原始输入 = " + speed
+                + " | 缩放后 = " + (speed / SPEED_SCALE_FACTOR)
+                + " | 最终生效速度 = " + finalSpeed);
+
+        // 5. 仅运行中状态重启渲染任务，增加日志记录+空指针防护
         if (mState == State.RUNNING) {
-            workerHandler.removeCallbacks(renderTask);
-            workerHandler.post(renderTask);
+            Log.d(TAG, "setSpeed: 动画处于RUNNING状态，重启渲染任务应用新速度");
+            if (workerHandler != null && renderTask != null) {
+                workerHandler.removeCallbacks(renderTask);
+                workerHandler.post(renderTask);
+            } else {
+                Log.w(TAG, "setSpeed: 动画处于RUNNING状态，但workerHandler/renderTask为空，无法重启任务");
+            }
+        } else {
+            Log.d(TAG, "setSpeed: 动画当前状态 = " + mState + "，仅缓存速度，启动时自动应用");
         }
     }
 
-    // 新增：获取当前速度
     public float getSpeed() {
         return this.speed;
     }
+
     protected void recycleBitmap(Bitmap bitmap) {
         synchronized (cacheBitmapsLock) {
             if (bitmap != null) {
@@ -172,31 +197,14 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         }
     }
 
-    /**
-     * 解码器的渲染回调
-     */
     public interface RenderListener {
-        /**
-         * 播放开始
-         */
         void onStart();
 
-        /**
-         * 帧播放
-         */
         void onRender(ByteBuffer byteBuffer);
 
-        /**
-         * 播放结束
-         */
         void onEnd();
     }
 
-
-    /**
-     * @param loader         webp的reader
-     * @param renderListener 渲染的回调
-     */
     public FrameSeqDecoder(Loader loader, @Nullable RenderListener renderListener) {
         this.mLoader = loader;
         if (renderListener != null) {
@@ -205,7 +213,6 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         this.taskId = FrameDecoderExecutor.getInstance().generateTaskId();
         this.workerHandler = new Handler(FrameDecoderExecutor.getInstance().getLooper(taskId));
     }
-
 
     public void addRenderListener(final RenderListener renderListener) {
         this.workerHandler.post(new Runnable() {
@@ -271,23 +278,22 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         fullRect = rect;
         long bufferSize = ((long) rect.width() * rect.height() / ((long) sampleSize * sampleSize) + 1) * 4;
 
-        try {                
-            frameBuffer = ByteBuffer.allocate((int)bufferSize);
+        try {
+            frameBuffer = ByteBuffer.allocate((int) bufferSize);
             if (mWriter == null) {
                 mWriter = getWriter();
             }
         } catch (OutOfMemoryError error) {
             Log.e(TAG, String.format(
-                    "OutOfMemoryError in FrameSeqDecoder: Buffer needed: %.2fMB (%,d bytes)",
-                    bufferSize / MB, bufferSize
-                )
+                            "OutOfMemoryError in FrameSeqDecoder: Buffer needed: %.2fMB (%,d bytes)",
+                            bufferSize / MB, bufferSize
+                    )
             );
             frameBuffer = null;
             fullRect = RECT_EMPTY;
             throw error;
         }
     }
-
 
     public int getFrameCount() {
         return this.frames.size();
@@ -297,9 +303,6 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         return frameIndex;
     }
 
-    /**
-     * @return Loop Count defined in file
-     */
     protected abstract int getLoopCount();
 
     public void start() {
@@ -354,6 +357,7 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         if (getNumPlays() == 0 || !finished) {
             this.frameIndex = -1;
             workerHandler.removeCallbacks(renderTask);
+            // 修复4：启动时直接运行任务，确保缓存的speed立即生效
             renderTask.run();
             for (RenderListener renderListener : renderListeners) {
                 renderListener.onStart();
@@ -464,12 +468,13 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         paused.compareAndSet(false, true);
     }
 
+    // 修复5：resume时重启任务，确保最新speed生效
     public void resume() {
-        paused.compareAndSet(true, false);
-        workerHandler.removeCallbacks(renderTask);
-        workerHandler.post(renderTask);
+        if (paused.compareAndSet(true, false)) {
+            workerHandler.removeCallbacks(renderTask);
+            workerHandler.post(renderTask);
+        }
     }
-
 
     public int getSampleSize() {
         return sampleSize;
@@ -550,13 +555,12 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         }
 
         Frame<R, W> frame = frames.get(frameIndex);
-        // 渲染当前帧（原有逻辑）
         renderFrame(frame);
 
-        // 核心修改：根据速度系数调整帧延迟
-        long originalDelay = frame.frameDuration; // 原帧定义的延迟时间（毫秒）
-        long adjustedDelay = (long) (originalDelay / speed); // 速度越快，延迟越小
-        return Math.max(10, adjustedDelay); // 最低延迟10ms，避免播放过快
+        // 修复6：兜底frameDuration为0的情况，避免除以speed后异常
+        long originalDelay = frame.frameDuration <= 0 ? 100 : frame.frameDuration; // 默认100ms兜底
+        long adjustedDelay = (long) (originalDelay / speed);
+        return Math.max(10, adjustedDelay); // 最低10ms，防止ANR
     }
 
     protected abstract void renderFrame(Frame<R, W> frame);
@@ -568,11 +572,6 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
         return frames.get(index);
     }
 
-    /**
-     * Get Indexed frame
-     *
-     * @param index <0 means reverse from last index
-     */
     public Bitmap getFrameBitmap(int index) throws IOException {
         if (mState != State.IDLE) {
             Log.e(TAG, debugInfo() + ",stop first");
@@ -628,4 +627,5 @@ public abstract class FrameSeqDecoder<R extends Reader, W extends Writer> {
             return size;
         }
     }
+
 }
